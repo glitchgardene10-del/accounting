@@ -413,7 +413,7 @@
                             <button onClick={()=>setActiveTab('ledger')} className={`w-full text-left p-3 rounded-lg transition ${activeTab==='ledger'?'bg-blue-600 text-white':'hover:bg-slate-800 text-slate-400'}`}>📑 分類帳 (明細)</button>
                             <button onClick={()=>setActiveTab('sync')} className={`w-full text-left p-3 rounded-lg transition ${activeTab==='sync'?'bg-emerald-600 text-white':'hover:bg-slate-800 text-emerald-400'}`}>🔄 自動拋轉作業</button>
                         </nav>
-                        <a href="accounting_portal.html" className="text-xs text-slate-500 text-center mt-auto hover:text-white pb-2">← 返回入口</a>
+                        <a href="index.html" className="text-xs text-slate-500 text-center mt-auto hover:text-white pb-2">← 返回入口</a>
                     </div>
 
                     <div className="flex-1 bg-slate-100 overflow-auto p-8">
@@ -681,4 +681,5 @@
         root.render(<AccountingApp />);
     </script>
 </body>
+
 </html>
