@@ -234,7 +234,7 @@
                 setLoading(false);
             };
 
-            const togglePaymentMethod = (index) => {
+            const togglePaymentMethod = () => {
                 const newList = [...payrollEmployees];
                 newList[index].isCash = !newList[index].isCash;
                 setPayrollEmployees(newList);
@@ -683,3 +683,4 @@
 </body>
 
 </html>
+
