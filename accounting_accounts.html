@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>會計科目設定 - 光祐長照</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&family=Roboto+Mono:wght@500&display=swap" rel="stylesheet">
+    
+    <script>
+        // 1. 前端簡易驗證 (防君子)
+        (function() {
+            const userSession = sessionStorage.getItem('kuangyou_user');
+            if (!userSession) {
+                alert("⛔ 請先從主系統登入！");
+                window.location.href = 'index.html'; 
+            }
+        })();
+    </script>
+
+    <style>
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f8fafc; }
+        .font-mono { font-family: 'Roboto Mono', monospace; }
+        .category-badge { font-size: 0.75rem; padding: 2px 8px; border-radius: 9999px; font-weight: bold; }
+        .cat-1 { background: #dbeafe; color: #1e40af; } 
+        .cat-2 { background: #fce7f3; color: #9d174d; } 
+        .cat-3 { background: #f3f4f6; color: #1f2937; } 
+        .cat-4 { background: #dcfce7; color: #166534; } 
+        .cat-5 { background: #ffedd5; color: #9a3412; } 
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, collection, getDocs, doc, setDoc, deleteDoc, query, orderBy, writeBatch } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        // ★★★ 修正點 1: 匯入 Auth 模組
+        import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        
+        const firebaseConfig = {
+            apiKey: "AIzaSyDkC6kfqpmEeMKIvWIqftounTSH_NPp25M",
+            authDomain: "assessmentsystem-9e2ec.firebaseapp.com",
+            projectId: "assessmentsystem-9e2ec",
+            storageBucket: "assessmentsystem-9e2ec.firebasestorage.app",
+            messagingSenderId: "455151254122",
+            appId: "1:455151254122:web:45787cfce4469bff90e813",
+            measurementId: "G-201C6BE86Z"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app); // ★★★ 修正點 2: 初始化 Auth
+
+        // 全域綁定
+        window.loadAccounts = loadAccounts;
+        window.openModal = openModal;
+        window.closeModal = closeModal;
+        window.saveAccount = saveAccount;
+        window.deleteAccount = deleteAccount;
+        window.initDefaults = initDefaults;
+
+        let allAccounts = [];
+
+        // ★★★ 修正點 3: 等待 Firebase 認證完成後才讀取資料
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                console.log("Firebase Auth Ready:", user.uid);
+                loadAccounts(); // 認證成功，執行讀取
+            } else {
+                console.warn("Firebase Auth Failed or Not Logged In");
+                // 這裡不需強制踢人，因為最上面的 sessionStorage 已經擋過了，且會造成循環
+            }
+        });
+
+        async function loadAccounts() {
+            const list = document.getElementById('account-list');
+            list.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-slate-400">載入中...</td></tr>';
+            
+            try {
+                const q = query(collection(db, "accounting_accounts"), orderBy("code"));
+                const snap = await getDocs(q);
+                
+                allAccounts = [];
+                snap.forEach(d => allAccounts.push(d.data()));
+
+                renderTable();
+            } catch (e) {
+                console.error("Load Error:", e); // 這邊可以看到具體錯誤
+                list.innerHTML = '<tr><td colspan="4" class="p-8 text-center text-red-400">讀取失敗：權限不足或網路錯誤</td></tr>';
+            }
+        }
+
+        function renderTable() {
+            const list = document.getElementById('account-list');
+            list.innerHTML = '';
+            
+            if (allAccounts.length === 0) {
+                document.getElementById('empty-state').classList.remove('hidden');
+                return;
+            }
+            document.getElementById('empty-state').classList.add('hidden');
+
+            const categoryMap = {
+                "1": "資產 (Assets)",
+                "2": "負債 (Liabilities)",
+                "3": "權益 (Equity)",
+                "4": "收入 (Revenue)",
+                "5": "費用 (Expenses)"
+            };
+
+            allAccounts.forEach(acc => {
+                const catCode = acc.code.charAt(0);
+                const catName = categoryMap[catCode] || "其他";
+                const catClass = `cat-${catCode}`;
+
+                list.innerHTML += `
+                    <tr class="border-b hover:bg-slate-50 transition">
+                        <td class="p-4 font-mono font-bold text-slate-700">${acc.code}</td>
+                        <td class="p-4 font-bold text-slate-800">${acc.name}</td>
+                        <td class="p-4"><span class="category-badge ${catClass}">${catName}</span></td>
+                        <td class="p-4 text-right">
+                            <button onclick="deleteAccount('${acc.code}')" class="text-slate-400 hover:text-red-500 transition px-2 py-1 rounded hover:bg-red-50">刪除</button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function openModal() { document.getElementById('modal').classList.remove('hidden'); }
+        function closeModal() { document.getElementById('modal').classList.add('hidden'); }
+
+        async function saveAccount() {
+            const code = document.getElementById('acc-code').value.trim();
+            const name = document.getElementById('acc-name').value.trim();
+            
+            if(!code || !name) return alert("請填寫完整");
+            if(code.length !== 4 || isNaN(code)) return alert("科目代碼必須為 4 位數字 (例如 1101)");
+
+            const btn = document.getElementById('btn-save');
+            btn.innerText = "儲存中...";
+            btn.disabled = true;
+
+            try {
+                await setDoc(doc(db, "accounting_accounts", code), {
+                    code, name, 
+                    category: code.charAt(0) 
+                });
+                closeModal();
+                document.getElementById('acc-code').value = '';
+                document.getElementById('acc-name').value = '';
+                loadAccounts();
+            } catch(e) {
+                alert("儲存失敗");
+            } finally {
+                btn.innerText = "確認新增";
+                btn.disabled = false;
+            }
+        }
+
+        async function deleteAccount(code) {
+            if(!confirm(`確定刪除科目 [${code}] 嗎？`)) return;
+            try {
+                await deleteDoc(doc(db, "accounting_accounts", code));
+                loadAccounts();
+            } catch(e) { alert("刪除失敗"); }
+        }
+
+        async function initDefaults() {
+            if(!confirm("這將會自動建立一套「長照機構專用」的會計科目表。\n確定要執行嗎？")) return;
+
+            const defaults = [
+                // 1. 資產
+                { code: "1101", name: "庫存現金 (零用金)" },
+                { code: "1102", name: "銀行存款-玉山" },
+                { code: "1103", name: "銀行存款-郵局" },
+                { code: "1140", name: "應收帳款-長照補助" },
+                { code: "1141", name: "應收帳款-自費" },
+                
+                // 2. 負債
+                { code: "2101", name: "應付薪資" },
+                { code: "2201", name: "代扣勞保費" },
+                { code: "2202", name: "代扣健保費" },
+                { code: "2203", name: "代扣勞退自提" },
+                { code: "2204", name: "應付退休金 (雇主提撥)" },
+                { code: "2801", name: "股東往來 (老闆墊款)" },
+
+                // 3. 權益
+                { code: "3101", name: "資本額" },
+                { code: "3351", name: "累積盈虧" },
+
+                // 4. 收入
+                { code: "4101", name: "長照收入-B碼 (照顧)" },
+                { code: "4102", name: "長照收入-G碼 (喘息)" },
+                { code: "4103", name: "長照收入-AA碼 (加給)" },
+                { code: "4201", name: "自費服務收入" },
+                { code: "4901", name: "其他收入" },
+
+                // 5. 費用
+                { code: "5101", name: "薪資支出-居服員" },
+                { code: "5102", name: "薪資支出-行政人員" },
+                { code: "5103", name: "退休金支出" },
+                { code: "5104", name: "加班費" },
+                { code: "5105", name: "勞健保費用 (雇主負擔)" },
+                { code: "5201", name: "租金支出" },
+                { code: "5202", name: "水電瓦斯費" },
+                { code: "5203", name: "郵電費 (電話/網路)" },
+                { code: "5204", name: "文具用品" },
+                { code: "5205", name: "交通費/油資" },
+                { code: "5206", name: "修繕費" },
+                { code: "5207", name: "餐費/伙食" },
+                { code: "5208", name: "保險費 (責任險)" },
+                { code: "5209", name: "教育訓練費" },
+                { code: "5299", name: "雜項支出" }
+            ];
+
+            const btn = document.getElementById('btn-init');
+            btn.innerText = "寫入中...";
+            btn.disabled = true;
+
+            const batch = writeBatch(db);
+            defaults.forEach(acc => {
+                const ref = doc(db, "accounting_accounts", acc.code);
+                batch.set(ref, { ...acc, category: acc.code.charAt(0) });
+            });
+
+            try {
+                await batch.commit();
+                alert("✅ 科目建立完成！");
+                loadAccounts();
+            } catch(e) {
+                console.error(e);
+                alert("建立失敗");
+            } finally {
+                btn.innerText = "⚡ 一鍵匯入標準科目";
+                btn.disabled = false;
+            }
+        }
+    </script>
+</head>
+<body class="p-8">
+
+    <div class="max-w-4xl mx-auto bg-white rounded-2xl shadow-xl overflow-hidden">
+        <div class="bg-slate-800 p-6 flex justify-between items-center text-white">
+            <div>
+                <h1 class="text-2xl font-black tracking-wide">會計科目設定</h1>
+                <p class="text-slate-400 text-sm">Chart of Accounts</p>
+            </div>
+            <a href="accounting_portal.html" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm font-bold transition">↩ 返回帳務中心</a>
+        </div>
+
+        <div class="p-6 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+            <div class="text-sm text-slate-500">
+                管理內帳系統使用的會計項目。
+            </div>
+            <button onclick="openModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg font-bold shadow transition flex items-center gap-2">
+                <span>➕</span> 新增科目
+            </button>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-sm">
+                <thead class="bg-slate-100 text-slate-600 uppercase font-bold text-xs sticky top-0">
+                    <tr>
+                        <th class="p-4 w-24">代碼</th>
+                        <th class="p-4">科目名稱</th>
+                        <th class="p-4 w-32">類別</th>
+                        <th class="p-4 w-20 text-right">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="account-list" class="divide-y divide-slate-100">
+                    </tbody>
+            </table>
+        </div>
+
+        <div id="empty-state" class="hidden p-12 text-center bg-white">
+            <div class="text-6xl mb-4">📂</div>
+            <h3 class="text-xl font-bold text-slate-800 mb-2">目前沒有任何科目</h3>
+            <p class="text-slate-500 mb-6">您可以手動新增，或直接使用預設模板。</p>
+            <button id="btn-init" onclick="initDefaults()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-3 rounded-full font-bold shadow-lg transition transform hover:scale-105">
+                ⚡ 一鍵匯入「長照機構」標準科目
+            </button>
+        </div>
+    </div>
+
+    <div id="modal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden">
+            <div class="bg-slate-800 p-4 text-white font-bold flex justify-between items-center">
+                <span>新增科目</span>
+                <button onclick="closeModal()" class="text-slate-400 hover:text-white">✕</button>
+            </div>
+            <div class="p-6 space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 mb-1">科目代碼 (4碼)</label>
+                    <input type="number" id="acc-code" class="w-full border-2 border-slate-200 rounded-lg p-2 font-mono font-bold focus:border-blue-500 outline-none" placeholder="例如: 1101">
+                    <p class="text-[10px] text-slate-400 mt-1">1開頭=資產, 2=負債, 3=權益, 4=收入, 5=費用</p>
+                </div>
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 mb-1">科目名稱</label>
+                    <input type="text" id="acc-name" class="w-full border-2 border-slate-200 rounded-lg p-2 font-bold focus:border-blue-500 outline-none" placeholder="例如: 零用金">
+                </div>
+                <button id="btn-save" onclick="saveAccount()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold shadow mt-2">確認新增</button>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
