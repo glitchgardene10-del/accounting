@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>光祐系統登入</title>
+    <title>光祐帳務系統</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
     <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -39,9 +39,9 @@
     <script type="text/babel">
         const { useState } = React;
 
-        // ★★★ 核心設定：只有這個帳號是老闆，其他人不管資料庫寫什麼，一律當員工 ★★★
+        // ★ 設定：老闆帳號 (不含後綴)
         const BOSS_USERNAME = "admin"; 
-        const EMAIL_SUFFIX = "@kuangyou.internal"; // 自動補全的信箱後綴
+        const EMAIL_SUFFIX = "@kuangyou.internal"; 
 
         const LoginPage = () => {
             const [username, setUsername] = useState('');
@@ -55,44 +55,30 @@
                 setError('');
 
                 try {
-                    // 1. 自動補全 Email (使用者只要輸入 admin 或 staff)
                     const fullEmail = username.includes('@') ? username : username + EMAIL_SUFFIX;
-
-                    // 2. 呼叫 Firebase 驗證密碼 (這裡只負責確認密碼對不對)
                     const userCredential = await window.signInWithEmailAndPassword(window.auth, fullEmail, password);
                     const user = userCredential.user;
 
-                    // ============================================================
-                    // ★★★ 關鍵邏輯：無視資料庫 Role，強制進行白名單分流 ★★★
-                    // ============================================================
-                    
-                    // 取得 @ 前面的帳號名稱
+                    // ★★★ 身分判斷邏輯 ★★★
                     const inputUser = user.email.split('@')[0];
-
-                    // 判斷是否為老闆 (只有 admin 才是 true，其他幾百個帳號都是 false)
                     const isManager = (inputUser === BOSS_USERNAME);
                     
-                    // 強制設定權限與名稱
                     const finalRole = isManager ? 'manager' : 'staff';
                     const finalName = isManager ? '老闆 (Manager)' : '行政人員 (Staff)';
 
-                    // ============================================================
-
-                    // 3. 寫入 Session (瀏覽器現在只認我們剛才強制設定的 finalRole)
                     const sessionData = {
                         email: user.email,
                         username: inputUser,
                         name: finalName,
-                        role: finalRole, // 這裡存進去的就是我們修正後的權限
+                        role: finalRole,
                         uid: user.uid
                     };
                     sessionStorage.setItem('kuangyou_user', JSON.stringify(sessionData));
 
-                    // 4. 自動導向正確的入口
                     if (isManager) {
-                        window.location.href = 'accounting_portal.html'; // 老闆去全功能
+                        window.location.href = 'accounting_portal.html';
                     } else {
-                        window.location.href = 'admin_portal.html'; // 員工去限制功能
+                        window.location.href = 'admin_portal.html';
                     }
 
                 } catch (err) {
@@ -107,7 +93,8 @@
                     <div className="bg-white w-full max-w-sm p-8 rounded-3xl shadow-2xl">
                         <div className="text-center mb-8">
                             <h1 className="text-3xl font-black text-slate-800 tracking-widest">KUANG-YOU</h1>
-                            <p className="text-sm text-slate-500 mt-1">ERP 系統登入</p>
+                            <p className="text-sm text-slate-500 mt-1 font-bold tracking-wide">ACCOUNTING SYSTEM</p>
+                            <p className="text-xs text-slate-400 mt-1">內部帳務系統</p>
                         </div>
 
                         <form onSubmit={handleLogin} className="space-y-6">
@@ -146,13 +133,9 @@
                                 disabled={loading}
                                 className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-black active:scale-95 transition disabled:opacity-50"
                             >
-                                {loading ? '驗證中...' : '登入系統 →'}
+                                {loading ? '驗證中...' : '登入帳務系統 →'}
                             </button>
                         </form>
-                        
-                        <div className="text-center mt-6 text-[10px] text-slate-300">
-                            Powered by Firebase Auth (Auto-Role Filter)
-                        </div>
                     </div>
                 </div>
             );
