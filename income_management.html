@@ -115,6 +115,7 @@
             const [confirmModal, setConfirmModal] = useState({ show: false, type: '', data: null });
             const [confirmAmount, setConfirmAmount] = useState('');
             const [selectedBankCode, setSelectedBankCode] = useState('');
+            const backLink = currentUser.role === 'manager' ? 'accounting_portal.html' : 'admin_portal.html';
 
             useEffect(() => { 
                 const unsubscribe = window.auth.onAuthStateChanged((user) => {
@@ -577,7 +578,7 @@
                             </div>
                             <div className="text-[10px] text-slate-500 mt-1 truncate">{userEmail}</div>
                         </div>
-                        <a href="accounting_portal.html" className="text-xs text-slate-500 text-center mt-4 hover:text-white pb-2">← 返回入口</a>
+                        <a href={backLink} className="text-xs text-slate-500 text-center mt-4 hover:text-white pb-2">← 返回入口</a>
                     </div>
 
                     <div className="flex-1 bg-slate-100 overflow-auto p-8 relative">

@@ -3,47 +3,163 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>光祐會計系統</title>
+    <title>光祐系統登入</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDkC6kfqpmEeMKIvWIqftounTSH_NPp25M",
+            authDomain: "assessmentsystem-9e2ec.firebaseapp.com",
+            projectId: "assessmentsystem-9e2ec",
+            storageBucket: "assessmentsystem-9e2ec.firebasestorage.app",
+            messagingSenderId: "455151254122",
+            appId: "1:455151254122:web:45787cfce4469bff90e813",
+            measurementId: "G-201C6BE86Z"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        window.auth = getAuth(app);
+        window.signInWithEmailAndPassword = signInWithEmailAndPassword;
+    </script>
+
     <style>
-        body { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); font-family: system-ui, sans-serif; }
-        .animate-pulse-slow { animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        body { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); font-family: 'Noto Sans TC', sans-serif; }
     </style>
 </head>
-<body class="h-screen flex flex-col items-center justify-center text-white">
+<body>
+    <div id="root"></div>
 
-    <div class="text-center space-y-8 p-10">
-        <div class="space-y-2">
-            <h1 class="text-6xl font-black tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">KUANG-YOU</h1>
-            <p class="text-xl text-slate-400 font-light tracking-wide">ACCOUNTING SYSTEM</p>
-        </div>
+    <script type="text/babel">
+        const { useState } = React;
 
-        <button onclick="enterSystem()" class="group relative px-8 py-4 bg-white text-slate-900 rounded-full font-bold text-lg shadow-[0_0_20px_rgba(255,255,255,0.3)] hover:shadow-[0_0_40px_rgba(255,255,255,0.5)] hover:scale-105 transition-all duration-300">
-            <span class="relative z-10 flex items-center gap-2">
-                🚀 進入系統
-            </span>
-        </button>
+        // ★★★ 核心設定：只有這個帳號是老闆，其他人不管資料庫寫什麼，一律當員工 ★★★
+        const BOSS_USERNAME = "admin"; 
+        const EMAIL_SUFFIX = "@kuangyou.internal"; // 自動補全的信箱後綴
 
-        <div class="text-xs text-slate-500 mt-10 animate-pulse-slow">
-            系統準備就緒 · 點擊上方按鈕開始
-        </div>
-    </div>
+        const LoginPage = () => {
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState('');
 
-    <script>
-        function enterSystem() {
-            // 1. 自動設定老闆權限 (略過帳密輸入)
-            const adminUser = {
-                email: "admin@kuangyou.internal",
-                name: "老闆 (Admin)",
-                role: "manager" // 給予最高權限
+            const handleLogin = async (e) => {
+                e.preventDefault();
+                setLoading(true);
+                setError('');
+
+                try {
+                    // 1. 自動補全 Email (使用者只要輸入 admin 或 staff)
+                    const fullEmail = username.includes('@') ? username : username + EMAIL_SUFFIX;
+
+                    // 2. 呼叫 Firebase 驗證密碼 (這裡只負責確認密碼對不對)
+                    const userCredential = await window.signInWithEmailAndPassword(window.auth, fullEmail, password);
+                    const user = userCredential.user;
+
+                    // ============================================================
+                    // ★★★ 關鍵邏輯：無視資料庫 Role，強制進行白名單分流 ★★★
+                    // ============================================================
+                    
+                    // 取得 @ 前面的帳號名稱
+                    const inputUser = user.email.split('@')[0];
+
+                    // 判斷是否為老闆 (只有 admin 才是 true，其他幾百個帳號都是 false)
+                    const isManager = (inputUser === BOSS_USERNAME);
+                    
+                    // 強制設定權限與名稱
+                    const finalRole = isManager ? 'manager' : 'staff';
+                    const finalName = isManager ? '老闆 (Manager)' : '行政人員 (Staff)';
+
+                    // ============================================================
+
+                    // 3. 寫入 Session (瀏覽器現在只認我們剛才強制設定的 finalRole)
+                    const sessionData = {
+                        email: user.email,
+                        username: inputUser,
+                        name: finalName,
+                        role: finalRole, // 這裡存進去的就是我們修正後的權限
+                        uid: user.uid
+                    };
+                    sessionStorage.setItem('kuangyou_user', JSON.stringify(sessionData));
+
+                    // 4. 自動導向正確的入口
+                    if (isManager) {
+                        window.location.href = 'accounting_portal.html'; // 老闆去全功能
+                    } else {
+                        window.location.href = 'admin_portal.html'; // 員工去限制功能
+                    }
+
+                } catch (err) {
+                    console.error(err);
+                    setError('❌ 登入失敗：帳號或密碼錯誤');
+                }
+                setLoading(false);
             };
-            sessionStorage.setItem('kuangyou_user', JSON.stringify(adminUser));
 
-            // 2. 跳轉到選單頁面
-            // 請確認您的選單檔案名稱是 accounting_portal.html
-            window.location.href = 'accounting_portal.html';
-        }
+            return (
+                <div className="min-h-screen flex items-center justify-center p-4">
+                    <div className="bg-white w-full max-w-sm p-8 rounded-3xl shadow-2xl">
+                        <div className="text-center mb-8">
+                            <h1 className="text-3xl font-black text-slate-800 tracking-widest">KUANG-YOU</h1>
+                            <p className="text-sm text-slate-500 mt-1">ERP 系統登入</p>
+                        </div>
+
+                        <form onSubmit={handleLogin} className="space-y-6">
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1 ml-1">帳號 (Username)</label>
+                                <div className="relative">
+                                    <input 
+                                        type="text" 
+                                        required
+                                        className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl p-3 text-sm focus:border-blue-500 focus:bg-white outline-none transition" 
+                                        placeholder="例如: admin 或 staff"
+                                        value={username}
+                                        onChange={e => setUsername(e.target.value)}
+                                    />
+                                    <div className="absolute right-3 top-3.5 text-xs text-slate-400 pointer-events-none">
+                                        @kuangyou.internal
+                                    </div>
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1 ml-1">密碼 (Password)</label>
+                                <input 
+                                    type="password" 
+                                    required
+                                    className="w-full bg-slate-50 border-2 border-slate-200 rounded-xl p-3 text-sm focus:border-blue-500 focus:bg-white outline-none transition" 
+                                    placeholder="••••••••"
+                                    value={password}
+                                    onChange={e => setPassword(e.target.value)}
+                                />
+                            </div>
+
+                            {error && <div className="text-red-500 text-xs font-bold text-center bg-red-50 p-2 rounded-lg">{error}</div>}
+
+                            <button 
+                                type="submit" 
+                                disabled={loading}
+                                className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl shadow-lg hover:bg-black active:scale-95 transition disabled:opacity-50"
+                            >
+                                {loading ? '驗證中...' : '登入系統 →'}
+                            </button>
+                        </form>
+                        
+                        <div className="text-center mt-6 text-[10px] text-slate-300">
+                            Powered by Firebase Auth (Auto-Role Filter)
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<LoginPage />);
     </script>
 </body>
 </html>
