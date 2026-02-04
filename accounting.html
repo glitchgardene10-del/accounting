@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>光祐會計內帳系統 (v11.0 月份篩選版)</title>
+    <title>光祐會計內帳系統 (v15.0 帳單連動版)</title>
     
     <script>
         (function() {
@@ -25,7 +25,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getFirestore, collection, getDocs, getDoc, query, where, addDoc, orderBy, deleteDoc, doc, updateDoc, writeBatch, increment, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, collection, getDocs, getDoc, query, where, addDoc, orderBy, deleteDoc, doc, updateDoc, writeBatch, increment, setDoc, deleteField } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
 
         const firebaseConfig = {
@@ -55,6 +55,7 @@
         window.writeBatch = writeBatch;
         window.orderBy = orderBy;
         window.increment = increment;
+        window.deleteField = deleteField;
 
         onAuthStateChanged(window.auth, (user) => {
             if (user && window.notifyAuthReady) window.notifyAuthReady();
@@ -80,11 +81,11 @@
         const EXPENSE_MAP = {
             "膳食費": "5207", "文具用品": "5204", "郵電費": "5203",
             "交通/油資": "5205", "修繕費": "5206", "雜項支出": "5299",
-            "交際費": "5299", "其他": "5299"
+            "交際費": "5299", "其他": "5299", "繳回現金": "1105", "零用金補給": "1105"
         };
 
         const PAYER_MAP = {
-            "petty_cash": "1101", "bank": "1102", "boss_paid": "2801"
+            "1105": "1105", "bank": "1102", "boss_paid": "2801"
         };
 
         const AccountingApp = () => {
@@ -96,21 +97,21 @@
             const [isAuthReady, setIsAuthReady] = useState(false);
             const [currentUser, setCurrentUser] = useState(JSON.parse(sessionStorage.getItem('kuangyou_user') || '{}'));
             
-            // ★★★ 篩選狀態 (新增) ★★★
+            const [pettyCashBalance, setPettyCashBalance] = useState(0); 
+
+            // Filters
             const [journalFilterMonth, setJournalFilterMonth] = useState(dayjs().format('YYYY-MM'));
             const [ledgerFilterMonth, setLedgerFilterMonth] = useState(dayjs().format('YYYY-MM'));
 
-            // Manual Entry Modal
+            // Modals
             const [showModal, setShowModal] = useState(false);
             const [entryDate, setEntryDate] = useState(dayjs().format('YYYY-MM-DD'));
             const [entryDesc, setEntryDesc] = useState('');
             const [entryRows, setEntryRows] = useState([{ account: '', debit: 0, credit: 0 }, { account: '', debit: 0, credit: 0 }]);
 
-            // Payroll Modal
             const [showPayrollModal, setShowPayrollModal] = useState(false);
             const [payrollEmployees, setPayrollEmployees] = useState([]);
 
-            // Ledger Filter
             const [selectedAccount, setSelectedAccount] = useState('');
 
             useEffect(() => {
@@ -122,13 +123,20 @@
                 if (isAuthReady) {
                     fetchJournals();
                     fetchAccounts();
+                    fetchPettyCash();
                 }
             }, [isAuthReady]);
+
+            const fetchPettyCash = async () => {
+                try {
+                    const docSnap = await window.getDoc(window.doc(window.db, "system_settings", "petty_cash"));
+                    if(docSnap.exists()) setPettyCashBalance(docSnap.data().balance || 0);
+                } catch(e) {}
+            };
 
             const fetchJournals = async () => {
                 setLoading(true);
                 try {
-                    // 這裡刻意抓取「所有」傳票，因為分類帳需要從頭計算餘額
                     const q = window.query(window.collection(window.db, "accounting_journal"), window.orderBy("date", "desc"));
                     const snap = await window.getDocs(q);
                     const list = [];
@@ -150,7 +158,7 @@
 
             const dashboardData = useMemo(() => {
                 let totalBank = 0; 
-                let totalCash = 0; 
+                let totalCashBoss = 0; // 1101
                 let revenueThisMonth = 0;
                 let expenseThisMonth = 0;
                 let personnelCost = 0; 
@@ -169,12 +177,12 @@
                         const code = String(e.code || "");
                         const amount = Number(e.amount);
 
-                        // 實時累計
-                        if (['1102', '1103', '1104', '1105'].some(prefix => code.startsWith(prefix))) { 
+                        if (['1102', '1103', '1104', '1105'].some(prefix => code.startsWith(prefix)) && code !== '1105') { 
                             e.type === 'debit' ? totalBank += amount : totalBank -= amount;
                         }
+                        
                         if (code.startsWith('1101')) {
-                            e.type === 'debit' ? totalCash += amount : totalCash -= amount;
+                            e.type === 'debit' ? totalCashBoss += amount : totalCashBoss -= amount;
                         }
 
                         if (jMonth === currentMonthPrefix) {
@@ -198,7 +206,7 @@
                 const profitMargin = revenueThisMonth > 0 ? (netProfit / revenueThisMonth * 100).toFixed(1) : 0;
                 const personnelPercent = expenseThisMonth > 0 ? (personnelCost / expenseThisMonth * 100).toFixed(1) : 0;
 
-                return { totalBank, totalCash, revenueThisMonth, expenseThisMonth, netProfit, profitMargin, personnelCost, personnelPercent, trend: last6Months };
+                return { totalBank, totalCashBoss, revenueThisMonth, expenseThisMonth, netProfit, profitMargin, personnelCost, personnelPercent, trend: last6Months };
             }, [journals]);
 
             const fetchPayrollData = async () => {
@@ -234,7 +242,7 @@
                 setLoading(false);
             };
 
-            const togglePaymentMethod = () => {
+            const togglePaymentMethod = (index) => {
                 const newList = [...payrollEmployees];
                 newList[index].isCash = !newList[index].isCash;
                 setPayrollEmployees(newList);
@@ -257,7 +265,9 @@
                     if (grossAdmin > 0) entries.push({ type: 'debit', code: '5101', name: '薪資支出-行政', amount: grossAdmin });
                     if (totalPension > 0) entries.push({ type: 'debit', code: '5102', name: '退休金支出', amount: totalPension });
                     if (payoutBank > 0) entries.push({ type: 'credit', code: '1102', name: '銀行存款', amount: payoutBank });
+                    
                     if (payoutCash > 0) entries.push({ type: 'credit', code: '1101', name: '庫存現金', amount: payoutCash });
+                    
                     if (totalDeduct > 0) entries.push({ type: 'credit', code: '2201', name: '代扣款', amount: totalDeduct });
                     if (totalPension > 0) entries.push({ type: 'credit', code: '2204', name: '應付退休金', amount: totalPension });
 
@@ -292,18 +302,31 @@
                     snap.forEach(doc => {
                         const d = doc.data();
                         const amount = Number(d.amount);
-                        const expenseCode = EXPENSE_MAP[d.category] || "5299"; 
-                        entries.push({ type: 'debit', code: expenseCode, name: d.category, amount });
-                        const payerCode = PAYER_MAP[d.payer] || "1101";
-                        entries.push({ type: 'credit', code: payerCode, name: d.payer==='boss_paid'?'股東往來':(d.payer==='bank'?'銀行':'現金'), amount });
-                        totalAmount += amount; idList.push(doc.id);
+                        let debitCode, creditCode;
+
+                        if (d.type === 'expense') {
+                            debitCode = EXPENSE_MAP[d.category] || "5299"; 
+                            creditCode = d.payer === 'petty_cash' ? '1105' : (d.payer === 'boss_paid' ? '2801' : d.payer); 
+                        } else if (d.type === 'income') {
+                            debitCode = '1105'; 
+                            creditCode = d.payer; 
+                        } else if (d.type === 'return') {
+                            debitCode = d.payer; 
+                            creditCode = '1105'; 
+                        }
+
+                        entries.push({ type: 'debit', code: debitCode, name: d.category || '雜項', amount });
+                        entries.push({ type: 'credit', code: creditCode, name: '對方科目', amount });
+
+                        totalAmount += amount; 
+                        idList.push(doc.id);
                         batchOps.update(doc.ref, { status: 'locked', lockedAt: new Date().toISOString() });
                     });
 
                     const journalRef = window.doc(window.collection(window.db, "accounting_journal"));
                     batchOps.set(journalRef, { 
                         date: dayjs().format('YYYY-MM-DD'), 
-                        description: `匯入流水帳 (${snap.size}筆)`, 
+                        description: `匯入行政流水帳 (${snap.size}筆)`, 
                         source: 'EXPENSE_IMPORT', 
                         entries, 
                         totalAmount, 
@@ -313,7 +336,48 @@
                     });
 
                     await batchOps.commit(); alert("✅ 拋轉成功！"); fetchJournals();
-                } catch(e) { alert("失敗：" + e.message); }
+                } catch(e) { console.error(e); alert("失敗：" + e.message); }
+                setLoading(false);
+            };
+
+            const deleteEntry = async (id) => {
+                if(!confirm("確定刪除此傳票？\n如果是流水帳或帳單支付，相關紀錄將會回復(Pending/Unpaid)。")) return;
+                
+                setLoading(true);
+                try {
+                    const docRef = window.doc(window.db, "accounting_journal", id);
+                    const docSnap = await window.getDoc(docRef);
+                    
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        const batch = window.writeBatch(window.db);
+
+                        // 1. 反向解鎖流水帳
+                        if (data.relatedExpenseIds && data.relatedExpenseIds.length > 0) {
+                            data.relatedExpenseIds.forEach(expId => {
+                                const expRef = window.doc(window.db, "accounting_expenses", expId);
+                                batch.update(expRef, { status: 'pending', lockedAt: window.deleteField() });
+                            });
+                        }
+
+                        // 2. ★★★ 反向解鎖帳單 (關鍵邏輯) ★★★
+                        if (data.relatedBillId) {
+                            const billRef = window.doc(window.db, "bill_requests", data.relatedBillId);
+                            batch.update(billRef, { 
+                                status: 'pending', 
+                                paidAt: window.deleteField(),
+                                payer: window.deleteField(),
+                                paymentMethod: window.deleteField(),
+                                paymentSource: window.deleteField()
+                            });
+                        }
+
+                        batch.delete(docRef);
+                        await batch.commit();
+                        alert("✅ 刪除成功，相關紀錄已復原！");
+                        fetchJournals();
+                    }
+                } catch(e) { console.error(e); alert("刪除失敗"); }
                 setLoading(false);
             };
 
@@ -339,66 +403,30 @@
                 } catch(e) { alert("失敗"); }
             };
 
-            const deleteEntry = async (id) => {
-                if(!confirm("確定刪除？")) return;
-                await window.deleteDoc(window.doc(window.db, "accounting_journal", id)); fetchJournals();
-            };
-
-            // ★★★ 分類帳邏輯優化：全期計算餘額，但只顯示當月 ★★★
             const ledgerData = useMemo(() => {
                 if(!selectedAccount) return [];
                 let balance = 0;
-                let fullHistory = journals
-                    .sort((a,b)=>dayjs(a.date).unix()-dayjs(b.date).unix()) // 按日期舊到新排序
-                    .map(j => {
-                        const match = j.entries.find(e => e.code === selectedAccount);
-                        if(!match) return null;
-                        const d = match.type === 'debit' ? Number(match.amount) : 0;
-                        const c = match.type === 'credit' ? Number(match.amount) : 0;
-                        
-                        // 計算餘額 (資產費損: 借-貸 / 負債權益收入: 貸-借)
-                        if(['1','5'].includes(selectedAccount[0])) balance += (d - c); 
-                        else balance += (c - d);
-                        
-                        return { date: j.date, desc: j.description, source: j.source, debit: d, credit: c, balance };
-                    }).filter(Boolean);
+                let fullHistory = journals.sort((a,b)=>dayjs(a.date).unix()-dayjs(b.date).unix()).map(j => {
+                    const match = j.entries.find(e => e.code === selectedAccount);
+                    if(!match) return null;
+                    const d = match.type === 'debit' ? Number(match.amount) : 0;
+                    const c = match.type === 'credit' ? Number(match.amount) : 0;
+                    if(['1','5'].includes(selectedAccount[0])) balance += (d - c); else balance += (c - d);
+                    return { date: j.date, desc: j.description, source: j.source, debit: d, credit: c, balance };
+                }).filter(Boolean);
 
-                // 找到篩選月份前的最後一筆餘額 (期初餘額)
-                const filterStart = ledgerFilterMonth; // YYYY-MM
+                const filterStart = ledgerFilterMonth; 
                 const startIndex = fullHistory.findIndex(r => r.date.startsWith(filterStart));
-                
-                // 篩選當月資料
                 const filteredList = fullHistory.filter(r => r.date.startsWith(filterStart));
 
-                // 如果當月之前有交易，插入「期初餘額」
                 if (startIndex > 0) {
-                    const openingBalance = fullHistory[startIndex - 1].balance;
-                    filteredList.unshift({
-                        date: `${filterStart}-01`,
-                        desc: "【期初餘額 / 承前頁】",
-                        source: "SYSTEM",
-                        debit: 0,
-                        credit: 0,
-                        balance: openingBalance,
-                        isOpening: true
-                    });
+                    filteredList.unshift({ date: `${filterStart}-01`, desc: "【期初餘額 / 承前頁】", source: "SYSTEM", debit: 0, credit: 0, balance: fullHistory[startIndex - 1].balance, isOpening: true });
                 } else if (startIndex === -1 && fullHistory.length > 0 && fullHistory[fullHistory.length-1].date < filterStart) {
-                     // 如果篩選的月份比最後一筆資料還晚 (例如現在查下個月)，顯示最後餘額
-                     filteredList.push({
-                        date: `${filterStart}-01`,
-                        desc: "【期初餘額】",
-                        source: "SYSTEM",
-                        debit: 0,
-                        credit: 0,
-                        balance: fullHistory[fullHistory.length-1].balance,
-                        isOpening: true
-                    });
+                     filteredList.push({ date: `${filterStart}-01`, desc: "【期初餘額】", source: "SYSTEM", debit: 0, credit: 0, balance: fullHistory[fullHistory.length-1].balance, isOpening: true });
                 }
-
                 return filteredList;
             }, [journals, selectedAccount, ledgerFilterMonth]);
 
-            // ★★★ 日記帳篩選 ★★★
             const filteredJournals = useMemo(() => {
                 return journals.filter(j => j.date.startsWith(journalFilterMonth));
             }, [journals, journalFilterMonth]);
@@ -413,7 +441,7 @@
                             <button onClick={()=>setActiveTab('ledger')} className={`w-full text-left p-3 rounded-lg transition ${activeTab==='ledger'?'bg-blue-600 text-white':'hover:bg-slate-800 text-slate-400'}`}>📑 分類帳 (明細)</button>
                             <button onClick={()=>setActiveTab('sync')} className={`w-full text-left p-3 rounded-lg transition ${activeTab==='sync'?'bg-emerald-600 text-white':'hover:bg-slate-800 text-emerald-400'}`}>🔄 自動拋轉作業</button>
                         </nav>
-                        <a href="index.html" className="text-xs text-slate-500 text-center mt-auto hover:text-white pb-2">← 返回入口</a>
+                        <a href="accounting_portal.html" className="text-xs text-slate-500 text-center mt-auto hover:text-white pb-2">← 返回入口</a>
                     </div>
 
                     <div className="flex-1 bg-slate-100 overflow-auto p-8">
@@ -425,26 +453,35 @@
                                     <span className="text-sm text-slate-500">數據更新: {dayjs().format('YYYY-MM-DD HH:mm')}</span>
                                 </div>
 
-                                <div className="grid grid-cols-2 gap-6">
+                                <div className="grid grid-cols-3 gap-6">
                                     <div className="bg-gradient-to-br from-emerald-500 to-teal-700 rounded-2xl p-6 text-white shadow-lg relative overflow-hidden">
                                         <div className="relative z-10">
                                             <div className="flex justify-between items-start">
-                                                <div className="text-emerald-100 text-sm font-bold tracking-wider mb-1">CASH ON HAND (庫存現金)</div>
+                                                <div className="text-emerald-100 text-sm font-bold tracking-wider mb-1">CASH (1101 庫存現金)</div>
                                             </div>
-                                            <div className={`text-4xl font-black font-mono ${dashboardData.totalCash < 0 ? 'text-red-300' : 'text-white'}`}>
-                                                ${new Intl.NumberFormat().format(dashboardData.totalCash)}
+                                            <div className={`text-4xl font-black font-mono ${dashboardData.totalCashBoss < 0 ? 'text-red-300' : 'text-white'}`}>
+                                                ${new Intl.NumberFormat().format(dashboardData.totalCashBoss)}
                                             </div>
-                                            <div className="mt-4 text-xs opacity-80 border-t border-white/20 pt-2">實時加總所有 1101 科目</div>
+                                            <div className="mt-4 text-xs opacity-80 border-t border-white/20 pt-2">老闆金庫 (會計傳票實時計算)</div>
                                         </div>
-                                        <div className="absolute right-0 bottom-0 text-9xl opacity-10 pointer-events-none">💵</div>
+                                    </div>
+                                    <div className="bg-gradient-to-br from-orange-500 to-amber-700 rounded-2xl p-6 text-white shadow-lg relative overflow-hidden">
+                                        <div className="relative z-10">
+                                            <div className="flex justify-between items-start">
+                                                <div className="text-orange-100 text-sm font-bold tracking-wider mb-1">PETTY CASH (1105 零用金)</div>
+                                            </div>
+                                            <div className={`text-4xl font-black font-mono ${pettyCashBalance < 0 ? 'text-red-300' : 'text-white'}`}>
+                                                ${new Intl.NumberFormat().format(pettyCashBalance)}
+                                            </div>
+                                            <div className="mt-4 text-xs opacity-80 border-t border-white/20 pt-2">行政櫃台 (即時連線)</div>
+                                        </div>
                                     </div>
                                     <div className="bg-gradient-to-br from-blue-600 to-indigo-800 rounded-2xl p-6 text-white shadow-lg relative overflow-hidden">
                                         <div className="relative z-10">
-                                            <div className="text-blue-100 text-sm font-bold tracking-wider mb-1">BANK BALANCE (銀行存款)</div>
+                                            <div className="text-blue-100 text-sm font-bold tracking-wider mb-1">BANK (1102~ 銀行存款)</div>
                                             <div className="text-4xl font-black font-mono">${new Intl.NumberFormat().format(dashboardData.totalBank)}</div>
-                                            <div className="mt-4 text-xs opacity-80 border-t border-white/20 pt-2">實時加總所有 1102~1105 科目</div>
+                                            <div className="mt-4 text-xs opacity-80 border-t border-white/20 pt-2">所有銀行帳戶總計</div>
                                         </div>
-                                        <div className="absolute right-0 bottom-0 text-9xl opacity-10 pointer-events-none">🏦</div>
                                     </div>
                                 </div>
 
@@ -489,7 +526,8 @@
                             </div>
                         )}
 
-                        {/* ... (Sync Tab 保持不變) ... */}
+                        {/* ... (Sync, Journal, Ledger, Modals 保持不變，省略以節省篇幅) ... */}
+                        
                         {activeTab === 'sync' && (
                             <div className="grid grid-cols-2 gap-8">
                                 <div className="bg-white p-8 rounded-2xl shadow-lg border border-slate-200 text-center flex flex-col items-center">
@@ -509,7 +547,6 @@
                             </div>
                         )}
 
-                        {/* ★★★ Journal Tab (日記帳) ★★★ */}
                         {activeTab === 'journal' && (
                             <div>
                                 <div className="flex justify-between items-center mb-6">
@@ -545,7 +582,6 @@
                             </div>
                         )}
 
-                        {/* ★★★ Ledger Tab (分類帳) ★★★ */}
                         {activeTab === 'ledger' && (
                             <div className="bg-white p-6 rounded-2xl shadow-sm border min-h-[500px]">
                                 <div className="flex gap-4 mb-4 items-center">
@@ -574,105 +610,93 @@
                                 </table>
                             </div>
                         )}
+
+                        {/* Modals: Payroll & Manual Entry (Same as before, keep them) */}
+                        {showPayrollModal && (
+                            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                                <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] animate-slide-up">
+                                    <div className="bg-slate-800 p-4 text-white font-bold flex justify-between items-center rounded-t-2xl">
+                                        <span>💰 {syncMonth} 薪資支付設定</span>
+                                        <button onClick={()=>setShowPayrollModal(false)} className="text-slate-400 hover:text-white">✕</button>
+                                    </div>
+                                    <div className="p-6 overflow-y-auto flex-1">
+                                        <div className="mb-4 text-sm text-slate-500 bg-yellow-50 p-3 rounded border border-yellow-200">
+                                            💡 請勾選本月「領取現金」的員工，未勾選者將預設為「銀行轉帳」。
+                                            (下方將自動分流 <b>薪資支出-居服員</b> 與 <b>薪資支出-行政</b>)
+                                        </div>
+                                        <table className="w-full text-sm border-collapse">
+                                            <thead>
+                                                <tr className="bg-slate-100 text-slate-600 font-bold border-b">
+                                                    <th className="p-3 text-left">姓名</th>
+                                                    <th className="p-3 text-left">職位</th>
+                                                    <th className="p-3 text-right">應發薪資 (Gross)</th>
+                                                    <th className="p-3 text-right">實領金額 (Net)</th>
+                                                    <th className="p-3 text-center w-32">支付方式</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {payrollEmployees.map((emp, idx) => (
+                                                    <tr key={idx} className={`hover:bg-blue-50 ${emp.isCash ? 'bg-orange-50' : ''}`}>
+                                                        <td className="p-3 font-bold">{emp.name}</td>
+                                                        <td className="p-3"><span className={`px-2 py-1 rounded text-xs font-bold ${emp.role==='caregiver'?'bg-green-100 text-green-700':'bg-purple-100 text-purple-700'}`}>{emp.role === 'caregiver' ? '居服員' : '行政'}</span></td>
+                                                        <td className="p-3 text-right text-slate-400">${new Intl.NumberFormat().format(emp.gross)}</td>
+                                                        <td className="p-3 text-right font-mono font-bold text-lg">${new Intl.NumberFormat().format(emp.net)}</td>
+                                                        <td className="p-3 text-center cursor-pointer" onClick={()=>togglePaymentMethod(idx)}>
+                                                            <div className={`border-2 rounded-lg px-2 py-1 text-xs font-bold transition select-none ${emp.isCash ? 'border-orange-500 bg-orange-100 text-orange-700' : 'border-slate-200 bg-white text-slate-400'}`}>{emp.isCash ? '💵 現金' : '🏦 轉帳'}</div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                            <tfoot className="bg-slate-50 font-bold">
+                                                <tr>
+                                                    <td colSpan="3" className="p-3 text-right">總計：</td>
+                                                    <td className="p-3 text-right border-t-2 border-slate-300">${new Intl.NumberFormat().format(payrollEmployees.reduce((s,e)=>s+e.net,0))}</td>
+                                                    <td className="p-3 text-center text-xs text-slate-500">(現金: ${new Intl.NumberFormat().format(payrollEmployees.filter(e=>e.isCash).reduce((s,e)=>s+e.net,0))})</td>
+                                                </tr>
+                                            </tfoot>
+                                        </table>
+                                    </div>
+                                    <div className="p-4 border-t bg-slate-50 flex justify-end gap-2 rounded-b-2xl">
+                                        <button onClick={()=>setShowPayrollModal(false)} className="px-6 py-2 text-slate-500 font-bold hover:bg-slate-100 rounded">取消</button>
+                                        <button onClick={confirmPayrollSync} className="px-6 py-2 bg-emerald-600 text-white rounded font-bold hover:bg-emerald-700 shadow-lg flex items-center gap-2"><span>✅ 確認拋轉傳票</span></button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {showModal && (
+                            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                                <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                                    <div className="bg-slate-800 p-4 text-white font-bold flex justify-between items-center">
+                                        <span>新增傳票 (Manual Entry)</span>
+                                        <button onClick={()=>setShowModal(false)} className="text-slate-400 hover:text-white">✕</button>
+                                    </div>
+                                    <div className="p-6 overflow-y-auto flex-1">
+                                        <div className="flex gap-4 mb-4">
+                                            <div className="w-1/3"><label className="block text-xs font-bold text-slate-500 mb-1">日期</label><input type="date" value={entryDate} onChange={e=>setEntryDate(e.target.value)} className="w-full border rounded p-2" /></div>
+                                            <div className="w-2/3"><label className="block text-xs font-bold text-slate-500 mb-1">摘要說明</label><input type="text" value={entryDesc} onChange={e=>setEntryDesc(e.target.value)} className="w-full border rounded p-2" placeholder="例如: 開帳餘額、現金調整" /></div>
+                                        </div>
+                                        <table className="w-full text-sm mb-4">
+                                            <thead className="bg-slate-50 text-slate-500 font-bold text-xs"><tr><th className="p-2 text-left">會計科目</th><th className="p-2 text-right">借方 (Debit)</th><th className="p-2 text-right">貸方 (Credit)</th><th className="p-2"></th></tr></thead>
+                                            <tbody>
+                                                {entryRows.map((row, idx) => (
+                                                    <tr key={idx} className="border-b">
+                                                        <td className="p-2"><select className="w-full border rounded p-2 font-mono" value={row.account} onChange={e=>handleRowChange(idx, 'account', e.target.value)}><option value="">請選擇...</option>{accounts.map(a => <option key={a.code} value={a.code}>{a.code} {a.name}</option>)}</select></td>
+                                                        <td className="p-2"><input type="number" className="w-full border rounded p-2 text-right" value={row.debit || ''} onChange={e=>handleRowChange(idx, 'debit', e.target.value)} /></td>
+                                                        <td className="p-2"><input type="number" className="w-full border rounded p-2 text-right" value={row.credit || ''} onChange={e=>handleRowChange(idx, 'credit', e.target.value)} /></td>
+                                                        <td className="p-2 text-center"><button onClick={()=>removeRow(idx)} className="text-red-400 hover:text-red-600 font-bold">×</button></td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                            <tfoot><tr className="font-bold text-slate-700 bg-slate-50"><td className="p-2 text-right">合計：</td><td className={`p-2 text-right ${entryRows.reduce((s,r)=>s+Number(r.debit),0)!==entryRows.reduce((s,r)=>s+Number(r.credit),0)?'text-red-500':'text-green-600'}`}>{new Intl.NumberFormat().format(entryRows.reduce((s,r)=>s+Number(r.debit),0))}</td><td className={`p-2 text-right ${entryRows.reduce((s,r)=>s+Number(r.debit),0)!==entryRows.reduce((s,r)=>s+Number(r.credit),0)?'text-red-500':'text-green-600'}`}>{new Intl.NumberFormat().format(entryRows.reduce((s,r)=>s+Number(r.credit),0))}</td><td></td></tr></tfoot>
+                                        </table>
+                                        <button onClick={addRow} className="text-blue-600 text-sm font-bold hover:underline">+ 新增一行</button>
+                                    </div>
+                                    <div className="p-4 border-t bg-slate-50 flex justify-end gap-2"><button onClick={()=>setShowModal(false)} className="px-4 py-2 text-slate-500 font-bold">取消</button><button onClick={saveManualEntry} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow">確認儲存</button></div>
+                                </div>
+                            </div>
+                        )}
                     </div>
-
-                    {/* ... (Modals 保持不變) ... */}
-                    {showPayrollModal && (
-                        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                            <div className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl flex flex-col max-h-[90vh] animate-slide-up">
-                                <div className="bg-slate-800 p-4 text-white font-bold flex justify-between items-center rounded-t-2xl">
-                                    <span>💰 {syncMonth} 薪資支付設定</span>
-                                    <button onClick={()=>setShowPayrollModal(false)} className="text-slate-400 hover:text-white">✕</button>
-                                </div>
-                                <div className="p-6 overflow-y-auto flex-1">
-                                    <div className="mb-4 text-sm text-slate-500 bg-yellow-50 p-3 rounded border border-yellow-200">
-                                        💡 請勾選本月「領取現金」的員工，未勾選者將預設為「銀行轉帳」。
-                                        (下方將自動分流 <b>薪資支出-居服員</b> 與 <b>薪資支出-行政</b>)
-                                    </div>
-                                    <table className="w-full text-sm border-collapse">
-                                        <thead>
-                                            <tr className="bg-slate-100 text-slate-600 font-bold border-b">
-                                                <th className="p-3 text-left">姓名</th>
-                                                <th className="p-3 text-left">職位</th>
-                                                <th className="p-3 text-right">應發薪資 (Gross)</th>
-                                                <th className="p-3 text-right">實領金額 (Net)</th>
-                                                <th className="p-3 text-center w-32">支付方式</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100">
-                                            {payrollEmployees.map((emp, idx) => (
-                                                <tr key={idx} className={`hover:bg-blue-50 ${emp.isCash ? 'bg-orange-50' : ''}`}>
-                                                    <td className="p-3 font-bold">{emp.name}</td>
-                                                    <td className="p-3">
-                                                        <span className={`px-2 py-1 rounded text-xs font-bold ${emp.role==='caregiver'?'bg-green-100 text-green-700':'bg-purple-100 text-purple-700'}`}>
-                                                            {emp.role === 'caregiver' ? '居服員' : '行政'}
-                                                        </span>
-                                                    </td>
-                                                    <td className="p-3 text-right text-slate-400">${new Intl.NumberFormat().format(emp.gross)}</td>
-                                                    <td className="p-3 text-right font-mono font-bold text-lg">${new Intl.NumberFormat().format(emp.net)}</td>
-                                                    <td className="p-3 text-center cursor-pointer" onClick={()=>togglePaymentMethod(idx)}>
-                                                        <div className={`border-2 rounded-lg px-2 py-1 text-xs font-bold transition select-none ${emp.isCash ? 'border-orange-500 bg-orange-100 text-orange-700' : 'border-slate-200 bg-white text-slate-400'}`}>
-                                                            {emp.isCash ? '💵 現金' : '🏦 轉帳'}
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                        <tfoot className="bg-slate-50 font-bold">
-                                            <tr>
-                                                <td colSpan="3" className="p-3 text-right">總計：</td>
-                                                <td className="p-3 text-right border-t-2 border-slate-300">
-                                                    ${new Intl.NumberFormat().format(payrollEmployees.reduce((s,e)=>s+e.net,0))}
-                                                </td>
-                                                <td className="p-3 text-center text-xs text-slate-500">
-                                                    (現金: ${new Intl.NumberFormat().format(payrollEmployees.filter(e=>e.isCash).reduce((s,e)=>s+e.net,0))})
-                                                </td>
-                                            </tr>
-                                        </tfoot>
-                                    </table>
-                                </div>
-                                <div className="p-4 border-t bg-slate-50 flex justify-end gap-2 rounded-b-2xl">
-                                    <button onClick={()=>setShowPayrollModal(false)} className="px-6 py-2 text-slate-500 font-bold hover:bg-slate-100 rounded">取消</button>
-                                    <button onClick={confirmPayrollSync} className="px-6 py-2 bg-emerald-600 text-white rounded font-bold hover:bg-emerald-700 shadow-lg flex items-center gap-2">
-                                        <span>✅ 確認拋轉傳票</span>
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {showModal && (
-                        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-                            <div className="bg-white w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                                <div className="bg-slate-800 p-4 text-white font-bold flex justify-between items-center">
-                                    <span>新增傳票 (Manual Entry)</span>
-                                    <button onClick={()=>setShowModal(false)} className="text-slate-400 hover:text-white">✕</button>
-                                </div>
-                                <div className="p-6 overflow-y-auto flex-1">
-                                    <div className="flex gap-4 mb-4">
-                                        <div className="w-1/3"><label className="block text-xs font-bold text-slate-500 mb-1">日期</label><input type="date" value={entryDate} onChange={e=>setEntryDate(e.target.value)} className="w-full border rounded p-2" /></div>
-                                        <div className="w-2/3"><label className="block text-xs font-bold text-slate-500 mb-1">摘要說明</label><input type="text" value={entryDesc} onChange={e=>setEntryDesc(e.target.value)} className="w-full border rounded p-2" placeholder="例如: 開帳餘額、現金調整" /></div>
-                                    </div>
-                                    <table className="w-full text-sm mb-4">
-                                        <thead className="bg-slate-50 text-slate-500 font-bold text-xs"><tr><th className="p-2 text-left">會計科目</th><th className="p-2 text-right">借方 (Debit)</th><th className="p-2 text-right">貸方 (Credit)</th><th className="p-2"></th></tr></thead>
-                                        <tbody>
-                                            {entryRows.map((row, idx) => (
-                                                <tr key={idx} className="border-b">
-                                                    <td className="p-2"><select className="w-full border rounded p-2 font-mono" value={row.account} onChange={e=>handleRowChange(idx, 'account', e.target.value)}><option value="">請選擇...</option>{accounts.map(a => <option key={a.code} value={a.code}>{a.code} {a.name}</option>)}</select></td>
-                                                    <td className="p-2"><input type="number" className="w-full border rounded p-2 text-right" value={row.debit || ''} onChange={e=>handleRowChange(idx, 'debit', e.target.value)} /></td>
-                                                    <td className="p-2"><input type="number" className="w-full border rounded p-2 text-right" value={row.credit || ''} onChange={e=>handleRowChange(idx, 'credit', e.target.value)} /></td>
-                                                    <td className="p-2 text-center"><button onClick={()=>removeRow(idx)} className="text-red-400 hover:text-red-600 font-bold">×</button></td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                        <tfoot><tr className="font-bold text-slate-700 bg-slate-50"><td className="p-2 text-right">合計：</td><td className={`p-2 text-right ${entryRows.reduce((s,r)=>s+Number(r.debit),0)!==entryRows.reduce((s,r)=>s+Number(r.credit),0)?'text-red-500':'text-green-600'}`}>{new Intl.NumberFormat().format(entryRows.reduce((s,r)=>s+Number(r.debit),0))}</td><td className={`p-2 text-right ${entryRows.reduce((s,r)=>s+Number(r.debit),0)!==entryRows.reduce((s,r)=>s+Number(r.credit),0)?'text-red-500':'text-green-600'}`}>{new Intl.NumberFormat().format(entryRows.reduce((s,r)=>s+Number(r.credit),0))}</td><td></td></tr></tfoot>
-                                    </table>
-                                    <button onClick={addRow} className="text-blue-600 text-sm font-bold hover:underline">+ 新增一行</button>
-                                </div>
-                                <div className="p-4 border-t bg-slate-50 flex justify-end gap-2"><button onClick={()=>setShowModal(false)} className="px-4 py-2 text-slate-500 font-bold">取消</button><button onClick={saveManualEntry} className="px-6 py-2 bg-blue-600 text-white rounded font-bold hover:bg-blue-700 shadow">確認儲存</button></div>
-                            </div>
-                        </div>
-                    )}
                 </div>
             );
         };
@@ -681,6 +705,4 @@
         root.render(<AccountingApp />);
     </script>
 </body>
-
 </html>
-

@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>財務管理中控台 - 光祐長照</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style> 
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #0f172a; color: white; }
+        .card-hover:hover { transform: translateY(-5px); box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .section-title { font-size: 0.75rem; color: #94a3b8; font-weight: bold; letter-spacing: 0.1em; margin-bottom: 1rem; text-transform: uppercase; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
+    </style>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, doc, getDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDkC6kfqpmEeMKIvWIqftounTSH_NPp25M",
+            authDomain: "assessmentsystem-9e2ec.firebaseapp.com",
+            projectId: "assessmentsystem-9e2ec",
+            storageBucket: "assessmentsystem-9e2ec.firebasestorage.app",
+            messagingSenderId: "455151254122",
+            appId: "1:455151254122:web:45787cfce4469bff90e813",
+            measurementId: "G-201C6BE86Z"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        window.login = login;
+        window.logout = logout;
+        window.goTo = goTo;
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                const docSnap = await getDoc(doc(db, "employees", user.uid));
+                if (docSnap.exists()) {
+                    const empData = docSnap.data();
+                    sessionStorage.setItem('kuangyou_user', JSON.stringify({ uid: user.uid, name: empData.name, role: empData.role }));
+                    document.getElementById('login-section').classList.add('hidden');
+                    document.getElementById('portal-section').classList.remove('hidden');
+                    document.getElementById('user-name').innerText = empData.name;
+                } else {
+                    alert("找不到員工資料"); await signOut(auth);
+                }
+            } else {
+                sessionStorage.removeItem('kuangyou_user');
+                document.getElementById('login-section').classList.remove('hidden');
+                document.getElementById('portal-section').classList.add('hidden');
+            }
+        });
+
+        async function login() {
+            const email = document.getElementById('email').value;
+            const pwd = document.getElementById('password').value;
+            if(!email || !pwd) return alert("請輸入帳號密碼");
+            const finalEmail = email.includes('@') ? email : `${email}@kuangyou.internal`;
+            try { await signInWithEmailAndPassword(auth, finalEmail, pwd); } catch (e) { alert("登入失敗：" + e.message); }
+        }
+
+        async function logout() { if(confirm("確定登出？")) await signOut(auth); }
+        function goTo(url) { window.location.href = url; }
+    </script>
+</head>
+<body class="min-h-screen flex items-center justify-center relative overflow-hidden p-4">
+
+    <div class="absolute top-0 left-0 w-full h-full overflow-hidden z-0 opacity-30 pointer-events-none">
+        <div class="absolute top-[-10%] left-[-10%] w-96 h-96 bg-blue-600 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob"></div>
+        <div class="absolute top-[-10%] right-[-10%] w-96 h-96 bg-emerald-600 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob animation-delay-2000"></div>
+        <div class="absolute bottom-[-20%] left-[20%] w-96 h-96 bg-purple-600 rounded-full mix-blend-multiply filter blur-3xl opacity-70 animate-blob animation-delay-4000"></div>
+    </div>
+
+    <div id="login-section" class="relative z-10 w-full max-w-sm p-8 glass rounded-2xl shadow-2xl">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-black tracking-widest mb-1">ACCOUNTING</h1>
+            <p class="text-slate-400 text-xs font-bold tracking-wider">財務管理中心 · 老闆專用</p>
+        </div>
+        <div class="space-y-4">
+            <input type="text" id="email" placeholder="帳號" class="w-full bg-slate-800/50 border border-slate-600 rounded p-3 text-white focus:border-blue-500 outline-none">
+            <input type="password" id="password" placeholder="密碼" class="w-full bg-slate-800/50 border border-slate-600 rounded p-3 text-white focus:border-blue-500 outline-none">
+            <button onclick="login()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-lg shadow-lg">登入系統</button>
+        </div>
+    </div>
+
+    <div id="portal-section" class="hidden relative z-10 w-full max-w-5xl">
+        <div class="flex justify-between items-end mb-8 border-b border-slate-700 pb-4">
+            <div>
+                <h1 class="text-3xl font-black tracking-widest">財務中控台</h1>
+                <p class="text-slate-400 font-bold mt-1">使用者：<span id="user-name" class="text-white">---</span></p>
+            </div>
+            <button onclick="logout()" class="text-xs text-slate-500 hover:text-white border border-slate-700 px-3 py-1 rounded transition">登出</button>
+        </div>
+
+        <div class="grid gap-8">
+            
+            <div>
+                <h3 class="section-title">Core Financials (總帳核心)</h3>
+                <div class="grid md:grid-cols-1 gap-6">
+                    <div onclick="goTo('accounting.html')" class="card-hover glass p-6 rounded-2xl cursor-pointer hover:bg-white/10 transition border-l-4 border-blue-500 flex items-center justify-between">
+                        <div>
+                            <div class="flex items-center gap-3 mb-2">
+                                <span class="text-4xl">📊</span>
+                                <h2 class="text-2xl font-bold text-white">專業會計總帳系統</h2>
+                            </div>
+                            <p class="text-sm text-slate-400">日記帳、分類帳、損益表、資產負債表、薪資與流水帳拋轉中心。</p>
+                        </div>
+                        <div class="text-3xl text-slate-600">➔</div>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <h3 class="section-title">Daily Operations (日常作業)</h3>
+                <div class="grid md:grid-cols-3 gap-6">
+                    
+                    <div onclick="goTo('income_management.html')" class="card-hover glass p-6 rounded-2xl cursor-pointer hover:bg-white/10 transition border-l-4 border-indigo-500">
+                        <div class="flex justify-between items-start mb-2">
+                            <span class="text-3xl">💰</span>
+                            <span class="text-[10px] bg-indigo-900 text-indigo-200 px-2 py-1 rounded font-bold">REVENUE</span>
+                        </div>
+                        <h2 class="text-lg font-bold mb-1 text-indigo-100">應收帳款管理</h2>
+                        <p class="text-xs text-slate-400">民眾自負額收款、政府補助核銷。</p>
+                    </div>
+
+                    <div onclick="goTo('expense_log.html')" class="card-hover glass p-6 rounded-2xl cursor-pointer hover:bg-white/10 transition border-l-4 border-emerald-500">
+                        <div class="flex justify-between items-start mb-2">
+                            <span class="text-3xl">📝</span>
+                            <span class="text-[10px] bg-emerald-900 text-emerald-200 px-2 py-1 rounded font-bold">ADMIN TOOL</span>
+                        </div>
+                        <h2 class="text-lg font-bold mb-1 text-emerald-100">行政收支流水帳</h2>
+                        <p class="text-xs text-slate-400">查看零用金餘額、補入現金、紀錄雜支。</p>
+                    </div>
+
+                    <div onclick="goTo('bill_reminder.html')" class="card-hover glass p-6 rounded-2xl cursor-pointer hover:bg-white/10 transition border-l-4 border-yellow-500">
+                        <div class="flex justify-between items-start mb-2">
+                            <span class="text-3xl">🔔</span>
+                            <span class="text-[10px] bg-yellow-900 text-yellow-200 px-2 py-1 rounded font-bold">URGENT</span>
+                        </div>
+                        <h2 class="text-lg font-bold mb-1 text-yellow-100">待繳帳單提醒</h2>
+                        <p class="text-xs text-slate-400">待繳費項目確認、匯款作業。</p>
+                    </div>
+
+                </div>
+            </div>
+
+            <div>
+                <h3 class="section-title">Configuration (設定)</h3>
+                <div class="grid md:grid-cols-3 gap-6">
+                    <div onclick="goTo('accounting_accounts.html')" class="card-hover glass p-4 rounded-xl cursor-pointer flex items-center gap-3 hover:bg-white/5 transition border border-slate-700">
+                        <div class="bg-slate-800 p-2 rounded-lg text-slate-300">📂</div>
+                        <div>
+                            <div class="font-bold text-sm text-slate-300">會計科目設定</div>
+                            <div class="text-[10px] text-slate-500">Chart of Accounts</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <style>
+        @keyframes blob {
+            0% { transform: translate(0px, 0px) scale(1); }
+            33% { transform: translate(30px, -50px) scale(1.1); }
+            66% { transform: translate(-20px, 20px) scale(0.9); }
+            100% { transform: translate(0px, 0px) scale(1); }
+        }
+        .animate-blob { animation: blob 7s infinite; }
+        .animation-delay-2000 { animation-delay: 2s; }
+        .animation-delay-4000 { animation-delay: 4s; }
+    </style>
+</body>
+</html>

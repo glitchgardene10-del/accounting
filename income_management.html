@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>應收帳款管理 (銀行科目擴充版)</title>
+    <title>應收帳款管理 (v13.0 雙錢包版)</title>
     
     <script>
         window.onerror = function(msg, url, line) {
@@ -99,15 +99,12 @@
             const [loading, setLoading] = useState(false);
             const [currentUser, setCurrentUser] = useState(JSON.parse(sessionStorage.getItem('kuangyou_user') || '{}'));
             
-            // 權限管理
             const [isManager, setIsManager] = useState(false);
             const [userEmail, setUserEmail] = useState('');
             const BOSS_EMAILS = ["admin@kuangyou.internal"]; 
 
-            // 會計科目 (銀行選項)
             const [bankOptions, setBankOptions] = useState([]);
 
-            // 篩選與狀態
             const [filterCollectionType, setFilterCollectionType] = useState('all'); 
             const [printCaregiver, setPrintCaregiver] = useState('all');
             const [showGovModal, setShowGovModal] = useState(false);
@@ -115,7 +112,6 @@
             const [showPasteModal, setShowPasteModal] = useState(false);
             const [pasteContent, setPasteContent] = useState('');
 
-            // 確認視窗狀態
             const [confirmModal, setConfirmModal] = useState({ show: false, type: '', data: null });
             const [confirmAmount, setConfirmAmount] = useState('');
             const [selectedBankCode, setSelectedBankCode] = useState('');
@@ -137,7 +133,6 @@
 
             useEffect(() => { fetchData(); }, [currentMonth, activeTab]);
 
-            // ★★★ 修正：抓取範圍擴大至 1101 ~ 1105 (現金、銀行存款、定期存款等) ★★★
             const fetchBankSubjects = async () => {
                 try {
                     const q = window.query(window.collection(window.db, "accounting_accounts"), window.orderBy("code"));
@@ -146,16 +141,11 @@
                     snap.forEach(d => {
                         const data = d.data();
                         const codeStr = String(data.code);
-                        // 篩選條件放寬：只要是 110 開頭的 (涵蓋 1101, 1102... 1105)
                         if (data.code && (codeStr.startsWith('1101') || codeStr.startsWith('1102') || codeStr.startsWith('1103') || codeStr.startsWith('1104') || codeStr.startsWith('1105'))) {
                             banks.push({ code: data.code, name: data.name });
                         }
                     });
-                    
-                    if(banks.length === 0) {
-                        // 預設值 (防呆)
-                        banks.push({ code: '1102', name: '銀行存款 (預設)' });
-                    }
+                    if(banks.length === 0) banks.push({ code: '1102', name: '銀行存款 (預設)' });
                     setBankOptions(banks);
                 } catch(e) { console.error("Bank fetch error", e); }
             };
@@ -400,11 +390,25 @@
                         item: `[收款] 案號 ${item.caseNo} ${item.clientName}`,
                         amount: item.amount, 
                         category: '服務收入(現金)', 
-                        payer: 'user_payment',
+                        payer: '1105', // ★★★ 這裡改成 1105 (零用金)
                         note: `經手人: ${currentUser.name}`, 
                         recorder: currentUser.name, 
                         status: 'locked', 
                         createdAt: new Date().toISOString()
+                    });
+
+                    const journalRef = window.doc(window.collection(window.db, "accounting_journal"));
+                    batch.set(journalRef, {
+                        date: dayjs().format('YYYY-MM-DD'),
+                        description: `收到自費款 (案號 ${item.caseNo} 現金)`,
+                        source: 'AR_USER_COLLECT_CASH',
+                        entries: [
+                            { type: 'debit', code: '1105', name: '零用金', amount: item.amount }, // ★★★ 借：1105
+                            { type: 'credit', code: '4201', name: '自費服務收入', amount: item.amount }
+                        ],
+                        totalAmount: item.amount,
+                        createdAt: new Date().toISOString(),
+                        recorder: currentUser.name
                     });
 
                     batch.update(window.doc(window.db, "income_receivables", item.id), {
@@ -412,7 +416,8 @@
                         paymentMethod: 'cash', 
                         paidAt: new Date().toISOString(), 
                         receiver: currentUser.name,
-                        linkedExpenseId: expenseRef.id 
+                        linkedExpenseId: expenseRef.id, 
+                        linkedJournalId: journalRef.id  
                     });
 
                     const pettyRef = window.doc(window.db, "system_settings", "petty_cash");
@@ -432,14 +437,10 @@
                 fetchData();
             };
 
-            // 觸發入帳確認視窗 (民眾 & 政府 通用)
             const openConfirmModal = (item, type) => {
                 if (!isManager) return alert("⛔ 權限不足：只有老闆可以確認入帳。");
-                
-                // 讀取記憶的銀行
                 const storageKey = type === 'user' ? 'last_bank_user' : 'last_bank_gov';
                 const lastBank = localStorage.getItem(storageKey) || (bankOptions[0]?.code || '');
-
                 setConfirmAmount(item.amount); 
                 setSelectedBankCode(lastBank);
                 setConfirmModal({ show: true, type, data: item });
@@ -478,7 +479,8 @@
                         source: type==='gov' ? 'AR_GOV' : 'AR_USER_COLLECT', 
                         entries, 
                         totalAmount: data.amount, 
-                        createdAt: new Date().toISOString() 
+                        createdAt: new Date().toISOString(),
+                        recorder: currentUser.name
                     });
 
                     batch.update(window.doc(window.db, "income_receivables", data.id), { 
@@ -492,7 +494,6 @@
 
                     await batch.commit();
                     
-                    // 記憶選擇
                     const storageKey = type === 'user' ? 'last_bank_user' : 'last_bank_gov';
                     localStorage.setItem(storageKey, bankCode);
 
@@ -524,10 +525,13 @@
                         receiver: window.deleteField()
                     });
 
-                    if (item.linkedExpenseId) {
+                    if (item.paymentMethod === 'cash') {
                         batch.update(window.doc(window.db, "system_settings", "petty_cash"), { balance: window.increment(-item.amount) });
-                        batch.delete(window.doc(window.db, "accounting_expenses", item.linkedExpenseId));
+                        if (item.linkedExpenseId) {
+                            batch.delete(window.doc(window.db, "accounting_expenses", item.linkedExpenseId));
+                        }
                     }
+                    
                     if (item.linkedJournalId) {
                         batch.delete(window.doc(window.db, "accounting_journal", item.linkedJournalId));
                     }
@@ -548,21 +552,6 @@
                     alert("✅ 新增成功"); setShowGovModal(false); setGovForm({ b: '', g: '', s: '' }); fetchData();
                 } catch(e) { console.error(e); alert("新增失敗"); }
                 setLoading(false);
-            };
-
-            const handleGovConfirm = async (item) => {
-                const actual = prompt(`預計 $${item.amount}，實際入帳金額？`, item.amount);
-                if(!actual) return;
-                const actAmount = Number(actual);
-                const diff = item.amount - actAmount;
-                const batch = window.writeBatch(window.db);
-                batch.update(window.doc(window.db, "income_receivables", item.id), { status: 'paid', actualAmount: actAmount, paidAt: new Date().toISOString() });
-                const entries = [{ type: 'debit', code: '1102', name: '銀行存款', amount: actAmount }];
-                if(diff > 0) entries.push({ type: 'debit', code: '4109', name: '核銷折讓', amount: diff });
-                entries.push({ type: 'credit', code: '4101', name: '長照收入', amount: item.amount });
-                const jRef = window.doc(window.collection(window.db, "accounting_journal"));
-                batch.set(jRef, { date: dayjs().format('YYYY-MM-DD'), description: `政府補助入帳 ${item.title}`, source: 'AR_GOV', entries, totalAmount: item.amount, createdAt: new Date().toISOString() });
-                await batch.commit(); alert("✅ 入帳成功"); fetchData();
             };
 
             const filteredReceivables = useMemo(() => {
@@ -588,7 +577,7 @@
                             </div>
                             <div className="text-[10px] text-slate-500 mt-1 truncate">{userEmail}</div>
                         </div>
-                        <a href="index.html" className="text-xs text-slate-500 text-center mt-4 hover:text-white pb-2">← 返回入口</a>
+                        <a href="accounting_portal.html" className="text-xs text-slate-500 text-center mt-4 hover:text-white pb-2">← 返回入口</a>
                     </div>
 
                     <div className="flex-1 bg-slate-100 overflow-auto p-8 relative">
@@ -812,5 +801,4 @@
         root.render(<IncomeApp />);
     </script>
 </body>
-
 </html>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>待繳帳單/請款中心</title>
+    <title>待繳帳單/請款中心 (v3.0 連動版)</title>
     
     <script>
         (function() {
@@ -25,7 +25,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, where, deleteDoc, doc, updateDoc, writeBatch } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, where, deleteDoc, doc, updateDoc, writeBatch, increment, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
         import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         
         const firebaseConfig = {
@@ -52,6 +52,8 @@
         window.doc = doc;
         window.updateDoc = updateDoc;
         window.writeBatch = writeBatch;
+        window.increment = increment;
+        window.getDocs = getDocs;
 
         onAuthStateChanged(window.auth, (user) => {
             if (user) window.isAuthReady = true;
@@ -73,7 +75,7 @@
             { name: "水電費", code: "5202" },
             { name: "電話/網路費", code: "5203" },
             { name: "勞健保費 (公司負擔)", code: "5105" },
-            { name: "勞健保/退休金 (繳納總額)", code: "2201" }, // 特殊處理
+            { name: "勞健保/退休金 (繳納總額)", code: "2201" }, 
             { name: "廠商貨款", code: "5204" },
             { name: "房租", code: "5201" },
             { name: "其他", code: "5299" }
@@ -84,22 +86,42 @@
             const [loading, setLoading] = useState(false);
             const [currentUser, setCurrentUser] = useState(JSON.parse(sessionStorage.getItem('kuangyou_user') || '{}'));
             
+            // 權限管理
+            const [isManager, setIsManager] = useState(false);
+            const BOSS_EMAILS = ["admin@kuangyou.internal"]; 
+
+            // 銀行列表狀態
+            const [bankOptions, setBankOptions] = useState([]);
+
             // 新增表單
             const [showForm, setShowForm] = useState(false);
             const [title, setTitle] = useState('');
             const [amount, setAmount] = useState('');
             const [dueDate, setDueDate] = useState(dayjs().format('YYYY-MM-DD'));
-            const [type, setType] = useState('5202'); // 預設水電
+            const [type, setType] = useState('5202'); 
             const [note, setNote] = useState('');
 
+            // 付款確認視窗
+            const [showPayModal, setShowPayModal] = useState(false);
+            const [selectedBill, setSelectedBill] = useState(null);
+            const [paymentMethod, setPaymentMethod] = useState('bank'); // bank or cash_1101
+            const [selectedBank, setSelectedBank] = useState('');
+
             useEffect(() => {
-                // 讀取未付款或最近付款的帳單
+                const unsubscribeAuth = window.auth.onAuthStateChanged((user) => {
+                    if (user) {
+                        if (BOSS_EMAILS.includes(user.email)) setIsManager(true);
+                        else setIsManager(false);
+                    }
+                });
+
+                // 1. 監聽帳單
                 const q = window.query(
                     window.collection(window.db, "bill_requests"),
-                    window.orderBy("dueDate", "asc") // 越快到期的越上面
+                    window.orderBy("dueDate", "asc")
                 );
 
-                const unsubscribe = window.onSnapshot(q, (snapshot) => {
+                const unsubscribeBills = window.onSnapshot(q, (snapshot) => {
                     const list = [];
                     snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
                     // 簡單過濾：只顯示「未付款」或是「最近7天內付過」的
@@ -107,7 +129,27 @@
                     setBills(showList);
                 });
 
-                return () => unsubscribe();
+                // 2. 抓取銀行科目 (1102~1105)
+                const fetchBanks = async () => {
+                    try {
+                        const qAcc = window.query(window.collection(window.db, "accounting_accounts"), window.orderBy("code"));
+                        const snap = await window.getDocs(qAcc);
+                        const banks = [];
+                        snap.forEach(d => {
+                            const data = d.data();
+                            const code = String(data.code);
+                            if (code.startsWith('1102') || code.startsWith('1103') || code.startsWith('1104') || code.startsWith('1105')) {
+                                banks.push({ code: data.code, name: data.name });
+                            }
+                        });
+                        if(banks.length === 0) banks.push({ code: '1102', name: '銀行存款' });
+                        setBankOptions(banks);
+                        setSelectedBank(banks[0]?.code);
+                    } catch(e) {}
+                };
+                fetchBanks();
+
+                return () => { unsubscribeAuth(); unsubscribeBills(); };
             }, []);
 
             const handleSubmit = async () => {
@@ -132,47 +174,62 @@
                 setLoading(false);
             };
 
-            const handlePay = async (bill) => {
-                if(!confirm(`確認已支付這筆款項？\n\n【${bill.title}】 $${new Intl.NumberFormat().format(bill.amount)}\n\n(系統將自動產生一筆「銀行轉帳」的會計傳票)`)) return;
-                
+            const openPayModal = (bill) => {
+                if (!isManager) return alert("⛔ 權限不足：只有老闆可以執行付款。");
+                setSelectedBill(bill);
+                setShowPayModal(true);
+            };
+
+            const confirmPay = async () => {
+                if (!selectedBill) return;
                 setLoading(true);
                 try {
                     const batch = window.writeBatch(window.db);
                     
                     // 1. 更新帳單狀態
-                    const billRef = window.doc(window.db, "bill_requests", bill.id);
+                    const billRef = window.doc(window.db, "bill_requests", selectedBill.id);
                     batch.update(billRef, {
                         status: 'paid',
                         paidAt: new Date().toISOString(),
-                        payer: currentUser.name
+                        payer: currentUser.name,
+                        paymentMethod: paymentMethod, 
+                        paymentSource: paymentMethod === 'bank' ? selectedBank : '1101'
                     });
 
                     // 2. 自動產生會計傳票 (老闆最愛的功能)
                     const journalRef = window.doc(window.collection(window.db, "accounting_journal"));
                     
-                    // 判斷借方科目
                     let debitEntry;
-                    if (bill.typeCode === '2201') {
-                        // 特殊邏輯：如果是繳勞健保，通常是沖銷代扣款 (這裡簡化處理，先全借代扣款，之後您可以手動調整)
-                        debitEntry = { type: 'debit', code: '2201', name: '代扣款/應付費用', amount: bill.amount };
+                    if (selectedBill.typeCode === '2201') {
+                        debitEntry = { type: 'debit', code: '2201', name: '代扣款/應付費用', amount: selectedBill.amount };
                     } else {
-                        debitEntry = { type: 'debit', code: bill.typeCode, name: bill.typeName, amount: bill.amount };
+                        debitEntry = { type: 'debit', code: selectedBill.typeCode, name: selectedBill.typeName, amount: selectedBill.amount };
+                    }
+
+                    // 決定貸方科目 (銀行 or 1101 庫存現金)
+                    let creditEntry;
+                    if (paymentMethod === 'bank') {
+                        const bankName = bankOptions.find(b=>b.code===selectedBank)?.name || '銀行存款';
+                        creditEntry = { type: 'credit', code: selectedBank, name: bankName, amount: selectedBill.amount };
+                    } else {
+                        // ★ 老闆付款：扣 1101 庫存現金
+                        creditEntry = { type: 'credit', code: '1101', name: '庫存現金', amount: selectedBill.amount };
                     }
 
                     batch.set(journalRef, {
                         date: dayjs().format('YYYY-MM-DD'),
-                        description: `支付帳單: ${bill.title}`,
+                        description: `支付帳單: ${selectedBill.title}`,
                         source: 'BILL_PAYMENT',
-                        entries: [
-                            debitEntry,
-                            { type: 'credit', code: '1102', name: '銀行存款', amount: bill.amount }
-                        ],
-                        totalAmount: bill.amount,
-                        createdAt: new Date().toISOString()
+                        relatedBillId: selectedBill.id, // ★★★ 關鍵：綁定帳單 ID，讓總帳知道這是哪筆帳單
+                        entries: [debitEntry, creditEntry],
+                        totalAmount: selectedBill.amount,
+                        createdAt: new Date().toISOString(),
+                        recorder: currentUser.name
                     });
 
                     await batch.commit();
                     alert("✅ 付款完成！傳票已自動建立。");
+                    setShowPayModal(false);
 
                 } catch(e) { console.error(e); alert("處理失敗"); }
                 setLoading(false);
@@ -182,7 +239,6 @@
                 if(confirm("刪除此請求？")) await window.deleteDoc(window.doc(window.db, "bill_requests", id));
             };
 
-            // 計算待繳總額
             const totalPending = bills.filter(b => b.status === 'pending').reduce((s, b) => s + b.amount, 0);
 
             return (
@@ -193,7 +249,7 @@
                                 <h1 className="text-2xl font-black tracking-wider">待繳帳單</h1>
                                 <p className="text-xs text-slate-400">Bill Payment Center</p>
                             </div>
-                            <a href="index.html" className="text-xs bg-slate-700 px-3 py-1 rounded-full hover:bg-slate-600">回首頁</a>
+                            <a href="accounting_portal.html" className="text-xs bg-slate-700 px-3 py-1 rounded-full hover:bg-slate-600">回首頁</a>
                         </div>
                         
                         <div className="bg-slate-700/50 p-4 rounded-xl flex justify-between items-center border border-slate-600">
@@ -230,9 +286,15 @@
 
                                     {bill.status === 'pending' ? (
                                         <div className="flex gap-2 mt-2">
-                                            <button onClick={()=>handlePay(bill)} className="flex-1 bg-slate-900 text-white py-2 rounded-lg font-bold shadow hover:bg-black active:scale-95 transition flex items-center justify-center gap-2">
-                                                <span>💳</span> 我已匯款 (Pay)
-                                            </button>
+                                            {isManager ? (
+                                                <button onClick={()=>openPayModal(bill)} className="flex-1 bg-slate-900 text-white py-2 rounded-lg font-bold shadow hover:bg-black active:scale-95 transition flex items-center justify-center gap-2">
+                                                    <span>💳</span> 確認付款
+                                                </button>
+                                            ) : (
+                                                <div className="flex-1 text-center text-xs text-slate-400 italic py-2">
+                                                    等待老闆付款...
+                                                </div>
+                                            )}
                                             <button onClick={()=>handleDelete(bill.id)} className="px-3 text-slate-300 hover:text-red-500">🗑️</button>
                                         </div>
                                     ) : (
@@ -251,10 +313,7 @@
                         })}
                     </div>
 
-                    {/* Floating Add Button (Admin Only - but open to all for now) */}
-                    <button onClick={()=>setShowForm(true)} className="fixed bottom-6 right-6 bg-blue-600 text-white w-14 h-14 rounded-full shadow-2xl flex items-center justify-center text-2xl font-bold hover:bg-blue-700 hover:scale-110 transition z-50">
-                        ＋
-                    </button>
+                    <button onClick={()=>setShowForm(true)} className="fixed bottom-6 right-6 bg-blue-600 text-white w-14 h-14 rounded-full shadow-2xl flex items-center justify-center text-2xl font-bold hover:bg-blue-700 hover:scale-110 transition z-50">＋</button>
 
                     {/* Add Form Modal */}
                     {showForm && (
@@ -265,19 +324,10 @@
                                     <button onClick={()=>setShowForm(false)}>✕</button>
                                 </div>
                                 <div className="p-6 space-y-4">
-                                    <div>
-                                        <label className="block text-xs font-bold text-slate-500 mb-1">帳單名稱</label>
-                                        <input type="text" className="w-full border-2 rounded-lg p-2" placeholder="例如: 12月電費" value={title} onChange={e=>setTitle(e.target.value)} />
-                                    </div>
+                                    <div><label className="block text-xs font-bold text-slate-500 mb-1">帳單名稱</label><input type="text" className="w-full border-2 rounded-lg p-2" placeholder="例如: 12月電費" value={title} onChange={e=>setTitle(e.target.value)} /></div>
                                     <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label className="block text-xs font-bold text-slate-500 mb-1">金額</label>
-                                            <input type="number" className="w-full border-2 rounded-lg p-2 font-mono" placeholder="$" value={amount} onChange={e=>setAmount(e.target.value)} />
-                                        </div>
-                                        <div>
-                                            <label className="block text-xs font-bold text-slate-500 mb-1">繳費期限</label>
-                                            <input type="date" className="w-full border-2 rounded-lg p-2" value={dueDate} onChange={e=>setDueDate(e.target.value)} />
-                                        </div>
+                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">金額</label><input type="number" className="w-full border-2 rounded-lg p-2 font-mono" placeholder="$" value={amount} onChange={e=>setAmount(e.target.value)} /></div>
+                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">繳費期限</label><input type="date" className="w-full border-2 rounded-lg p-2" value={dueDate} onChange={e=>setDueDate(e.target.value)} /></div>
                                     </div>
                                     <div>
                                         <label className="block text-xs font-bold text-slate-500 mb-1">費用分類 (用於自動做帳)</label>
@@ -285,13 +335,43 @@
                                             {EXPENSE_TYPES.map(t => <option key={t.code} value={t.code}>{t.name}</option>)}
                                         </select>
                                     </div>
-                                    <div>
-                                        <label className="block text-xs font-bold text-slate-500 mb-1">備註 (匯款帳號等)</label>
-                                        <textarea className="w-full border-2 rounded-lg p-2 h-20 text-sm" placeholder="銀行代碼: xxx 帳號: xxx" value={note} onChange={e=>setNote(e.target.value)}></textarea>
+                                    <div><label className="block text-xs font-bold text-slate-500 mb-1">備註</label><textarea className="w-full border-2 rounded-lg p-2 h-20 text-sm" placeholder="銀行代碼: xxx 帳號: xxx" value={note} onChange={e=>setNote(e.target.value)}></textarea></div>
+                                    <button onClick={handleSubmit} className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg shadow hover:bg-blue-700">送出提醒</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Pay Modal (Updated) */}
+                    {showPayModal && (
+                        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+                            <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl p-6 animate-slide-up">
+                                <h3 className="text-xl font-bold text-slate-800 mb-4">確認付款</h3>
+                                <div className="mb-4 text-sm text-slate-600">
+                                    支付：<b>{selectedBill?.title}</b><br/>
+                                    金額：<b className="text-red-600 font-mono text-lg">${new Intl.NumberFormat().format(selectedBill?.amount)}</b>
+                                </div>
+                                
+                                <div className="space-y-3 mb-6">
+                                    <label className="block text-xs font-bold text-slate-500">付款方式</label>
+                                    <div className="flex gap-2">
+                                        <button onClick={()=>setPaymentMethod('bank')} className={`flex-1 py-2 rounded border-2 text-sm font-bold ${paymentMethod==='bank'?'border-blue-500 bg-blue-50 text-blue-700':'border-slate-200'}`}>🏦 銀行轉帳</button>
+                                        <button onClick={()=>setPaymentMethod('cash_1101')} className={`flex-1 py-2 rounded border-2 text-sm font-bold ${paymentMethod==='cash_1101'?'border-emerald-500 bg-emerald-50 text-emerald-700':'border-slate-200'}`}>💵 庫存現金(1101)</button>
                                     </div>
-                                    <button onClick={handleSubmit} className="w-full bg-blue-600 text-white font-bold py-3 rounded-lg shadow hover:bg-blue-700">
-                                        送出提醒
-                                    </button>
+
+                                    {paymentMethod === 'bank' && (
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-500 mb-1">選擇銀行</label>
+                                            <select className="w-full border rounded p-2 text-sm" value={selectedBank} onChange={e=>setSelectedBank(e.target.value)}>
+                                                {bankOptions.map(b => <option key={b.code} value={b.code}>{b.code} {b.name}</option>)}
+                                            </select>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="flex gap-2">
+                                    <button onClick={()=>setShowPayModal(false)} className="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-lg">取消</button>
+                                    <button onClick={confirmPay} className="flex-1 bg-slate-900 text-white font-bold py-3 rounded-lg hover:bg-black">確認支付</button>
                                 </div>
                             </div>
                         </div>
@@ -308,5 +388,4 @@
         .animate-slide-up { animation: slide-up 0.3s ease-out; }
     </style>
 </body>
-
 </html>
